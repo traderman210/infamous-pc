@@ -9,6 +9,30 @@ jobs:
     timeout-minutes: 3600
 
     steps:
+      - name: Create 10 Extra Disks
+        run: |
+          # Create 10 dynamic VHDX files (150GB each) and mount them as D: through M:
+          $letters = 'D','E','F','G','H','I','J','K','L','M'
+          $sizeGB = 150
+          New-Item -ItemType Directory -Path "C:\VHDS" -Force | Out-Null
+          $i = 1
+          foreach ($letter in $letters) {
+              $vhdPath = "C:\VHDS\disk$i.vhdx"
+              Write-Host "Creating VHD: $vhdPath ($sizeGB GB)"
+              New-VHD -Path $vhdPath -SizeBytes ($sizeGB * 1GB) -Dynamic | Out-Null
+
+              $mounted = Mount-VHD -Path $vhdPath -Passthru
+              $diskNumber = $mounted.DiskNumber
+
+              Write-Host "Initializing and formatting DiskNumber $diskNumber as $letter`:"
+              Initialize-Disk -Number $diskNumber -PartitionStyle GPT -PassThru | Out-Null
+              New-Partition -DiskNumber $diskNumber -UseMaximumSize -DriveLetter $letter |
+                Format-Volume -FileSystem NTFS -NewFileSystemLabel "Disk$i" -Confirm:$false | Out-Null
+
+              Write-Host "Disk $i ready at drive letter: $letter`:"
+              $i++
+          }
+
       - name: Configure Core RDP Settings
         run: |
           # Enable Remote Desktop and disable Network Level Authentication (if needed)
@@ -18,17 +42,14 @@ jobs:
                              -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "SecurityLayer" -Value 0 -Force
-
           # Remove any existing rule with the same name to avoid duplication
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
           
           # For testing, allow any incoming connection on port 3389
           netsh advfirewall firewall add rule name="RDP-Tailscale" `
             dir=in action=allow protocol=TCP localport=3389
-
           # (Optional) Restart the Remote Desktop service to ensure changes take effect
           Restart-Service -Name TermService -Force
-
       - name: Create RDP User with Secure Password
         run: |
           Add-Type -AssemblyName System.Security
@@ -56,7 +77,6 @@ jobs:
               Write-Error "User creation failed"
               exit 1
           }
-
       - name: Install Tailscale
         run: |
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
@@ -65,7 +85,6 @@ jobs:
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
-
       - name: Establish Tailscale Connection
         run: |
           # Bring up Tailscale with the provided auth key and set a unique hostname
@@ -97,7 +116,6 @@ jobs:
               exit 1
           }
           Write-Host "TCP connectivity successful!"
-
       - name: Maintain Connection
         run: |
           Write-Host "`n=== RDP ACCESS ==="
